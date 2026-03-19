@@ -30,20 +30,6 @@ NS_MESSAGE = "http://www.sdmx.org/resources/sdmxml/schemas/v2_1/message"
 
 # Accept headers
 ACCEPT_CSV = "application/vnd.sdmx.data+csv;version=1.0.0"
-ACCEPT_STRUCT_JSON = "application/vnd.sdmx.structure+json;version=2.0.0"
-
-# Known convenience dataflows (verified against live ISTAT API)
-# 22_289: "Resident population on 1st January" — municipal level, annual
-#   Dimensions: FREQ.REF_AREA.DATA_TYPE.SEX.AGE.MARITAL_STATUS
-#   REF_AREA format: bare 6-digit ISTAT comune code, e.g. "037006" for Bologna
-POPULATION_DATAFLOW = "22_289"
-
-# 150_915: "Employment rate" — regional/national, annual
-# 151_914: "Unemployment rate" — regional/national, annual
-#   Dimensions: FREQ.REF_AREA.DATA_TYPE.SEX.AGE.EDU_LEV_HIGHEST.CITIZENSHIP.[extra]
-#   REF_AREA format: NUTS2 code WITH IT prefix, e.g. "ITC4" for Lombardia, "IT" for national
-EMPLOYMENT_DATAFLOW = "150_915"
-UNEMPLOYMENT_DATAFLOW = "151_914"
 
 # ─────────────────────────────────────────────
 # Rate limiter (5 req / 60 sec)
@@ -86,17 +72,20 @@ def _rate_limited_get(
 
 
 # ─────────────────────────────────────────────
-# Dataflow cache (one fetch per server lifetime)
+# Caches
 # ─────────────────────────────────────────────
 
 _dataflow_cache: list[dict] | None = None
 _dataflow_cache_time: float = 0.0
 _CACHE_TTL = 86400  # 24 hours
 
+_structure_cache: dict[str, tuple[dict, float]] = {}  # key: dataflow_id
+_codelist_cache: dict[str, tuple[list, float]] = {}   # key: codelist_id
+
 
 def _get_dataflows() -> list[dict]:
     """
-    Fetch and cache the full list of ISTAT dataflows (~450 datasets).
+    Fetch and cache the full list of ISTAT dataflows (~4700 datasets).
 
     Refreshes at most once per 24 hours to avoid burning rate-limit quota.
     Returns list of {"id": str, "names": {"en": str, "it": str}} dicts.
@@ -149,7 +138,7 @@ def search_datasets(query: str, lang: str = "en") -> list[dict]:
     """
     Search ISTAT datasets by keyword. Returns matching datasets with their ID and name.
 
-    Use this before fetching data — you need a dataset ID to query data.
+    Use this as the first step — you need a dataset ID to query data or explore structure.
     Returns up to 50 results. Language can be 'it' (Italian) or 'en' (English).
 
     args:
@@ -186,163 +175,284 @@ def search_datasets(query: str, lang: str = "en") -> list[dict]:
 
 def get_dataset_structure(dataflow_id: str) -> dict:
     """
-    Get the structure (dimensions and their codes) of a specific ISTAT dataset.
+    Get the structure of a specific ISTAT dataset: its dimensions and their codelist IDs.
 
-    Call this after search_datasets to understand what filters are available
-    before fetching actual data. Returns dimension names, codes, and available values.
+    Call this after search_datasets to understand what dimensions are available.
+    Then use get_dimension_values to discover valid codes for any dimension before
+    building a key_filter for get_dataset_data.
+
+    Results are cached — subsequent calls for the same dataset cost 0 API calls.
 
     args:
         dataflow_id: The dataset ID from search_datasets (e.g. '22_289')
 
     returns:
-        Dict with dataset name, dimensions list, and available code values
+        Dict with dataset name, structure_id, and list of dimensions (id, position, name, codelist_id)
     """
-    # Step 1 — resolve datastructure ID from dataflow
-    df_url = f"{BASE_URL}/dataflow/IT1/{dataflow_id}"
+    now = time.time()
+    if dataflow_id in _structure_cache:
+        cached, ts = _structure_cache[dataflow_id]
+        if now - ts < _CACHE_TTL:
+            return cached
+
+    # Single call with ?references=all returns dataflow + embedded DSD in one XML response
+    url = f"{BASE_URL}/dataflow/IT1/{dataflow_id}"
     try:
         resp = _rate_limited_get(
-            df_url,
-            headers={"Accept": ACCEPT_STRUCT_JSON},
+            url,
+            headers={"Accept": "application/xml"},
+            params={"references": "all"},
         )
         resp.raise_for_status()
     except httpx.TimeoutException:
         return {"error": "Request timed out fetching dataflow", "dataflow_id": dataflow_id}
     except httpx.HTTPError as exc:
-        return {"error": f"HTTP error fetching dataflow: {exc}", "dataflow_id": dataflow_id}
+        return {"error": f"HTTP error: {exc}", "dataflow_id": dataflow_id}
 
-    structure_id = None
-    dataset_name = ""
-
-    # Try JSON first
     try:
-        data = resp.json()
-        dfs = (
-            data.get("data", {})
-            .get("dataflows", [])
-        )
-        if dfs:
-            df = dfs[0]
-            dataset_name = (
-                df.get("name", {}).get("en")
-                or df.get("name", {}).get("it")
-                or dataflow_id
-            )
-            ref = df.get("structure", {})
-            structure_id = ref.get("id") or ref.get("ref", {}).get("id")
-    except Exception:
-        pass
+        root = ET.fromstring(resp.text)
+    except ET.ParseError as exc:
+        return {"error": f"XML parse error: {exc}", "dataflow_id": dataflow_id}
 
-    # Fall back to XML if JSON didn't give us what we need
-    if not structure_id:
-        try:
-            root = ET.fromstring(resp.text)
-            for df_el in root.iter(f"{{{NS_STRUCTURE}}}Dataflow"):
-                for name_el in df_el.iter(f"{{{NS_COMMON}}}Name"):
-                    if name_el.get("{http://www.w3.org/XML/1998/namespace}lang") == "en":
-                        dataset_name = name_el.text or dataflow_id
-                for ref_el in df_el.iter(f"{{{NS_STRUCTURE}}}Structure"):
-                    ref = ref_el.find(f"{{{NS_COMMON}}}Ref")
-                    if ref is not None:
-                        structure_id = ref.get("id")
-        except ET.ParseError as exc:
-            return {"error": f"XML parse error: {exc}", "dataflow_id": dataflow_id}
+    # Extract dataset name from Dataflow element
+    dataset_name = dataflow_id
+    structure_id = ""
+    for df_el in root.iter(f"{{{NS_STRUCTURE}}}Dataflow"):
+        # Prefer English name
+        for name_el in df_el.iter(f"{{{NS_COMMON}}}Name"):
+            lang = name_el.get("{http://www.w3.org/XML/1998/namespace}lang", "")
+            if lang == "en" and name_el.text:
+                dataset_name = name_el.text.strip()
+                break
+        # Fall back to Italian if no English name found
+        if dataset_name == dataflow_id:
+            for name_el in df_el.iter(f"{{{NS_COMMON}}}Name"):
+                if name_el.text:
+                    dataset_name = name_el.text.strip()
+                    break
+        # Extract structure reference (Ref has no XML namespace)
+        for struct_el in df_el.iter(f"{{{NS_STRUCTURE}}}Structure"):
+            ref = struct_el.find("Ref")
+            if ref is not None:
+                structure_id = ref.get("id", "")
 
-    if not structure_id:
+    # Extract dimensions from embedded DataStructure
+    dimensions = []
+    for dsd_el in root.iter(f"{{{NS_STRUCTURE}}}DataStructure"):
+        if not structure_id:
+            structure_id = dsd_el.get("id", "")
+        for dim_el in dsd_el.iter(f"{{{NS_STRUCTURE}}}Dimension"):
+            dim_id = dim_el.get("id", "")
+            dim_pos = int(dim_el.get("position", 0))
+
+            # Get dimension name from ConceptIdentity
+            # Note: <Ref> tag has no XML namespace
+            dim_name = dim_id
+            for concept_ref in dim_el.iter(f"{{{NS_STRUCTURE}}}ConceptIdentity"):
+                ref = concept_ref.find("Ref")
+                if ref is not None:
+                    concept_name = ref.get("id", "")
+                    if concept_name:
+                        dim_name = concept_name
+
+            # Get codelist ID from Enumeration
+            # Note: <Ref> tag inside <Enumeration> has no XML namespace
+            codelist_id = ""
+            for enum_el in dim_el.iter(f"{{{NS_STRUCTURE}}}Enumeration"):
+                ref = enum_el.find("Ref")
+                if ref is not None:
+                    codelist_id = ref.get("id", "")
+
+            if dim_id:
+                dimensions.append({
+                    "id": dim_id,
+                    "position": dim_pos,
+                    "name": dim_name,
+                    "codelist_id": codelist_id,
+                })
+
+    # Sort by position
+    dimensions.sort(key=lambda d: d["position"])
+
+    if not dimensions:
         return {
-            "error": "Could not resolve structure ID from dataflow",
+            "error": "No dimensions found — dataset may not exist or structure is non-standard",
             "dataflow_id": dataflow_id,
         }
 
-    # Step 2 — fetch the data structure definition
-    struct_url = f"{BASE_URL}/datastructure/IT1/{structure_id}"
-    try:
-        resp2 = _rate_limited_get(
-            struct_url,
-            headers={"Accept": ACCEPT_STRUCT_JSON},
-        )
-        resp2.raise_for_status()
-    except httpx.TimeoutException:
-        return {"error": "Request timed out fetching structure", "structure_id": structure_id}
-    except httpx.HTTPError as exc:
-        return {"error": f"HTTP error fetching structure: {exc}", "structure_id": structure_id}
-
-    dimensions = []
-    try:
-        sdata = resp2.json()
-        dsds = sdata.get("data", {}).get("dataStructures", [])
-        if dsds:
-            dsd = dsds[0]
-            if not dataset_name:
-                dataset_name = (
-                    dsd.get("name", {}).get("en")
-                    or dsd.get("name", {}).get("it")
-                    or dataflow_id
-                )
-            dim_list = (
-                dsd.get("dataStructureComponents", {})
-                .get("dimensionList", {})
-                .get("dimensions", [])
-            )
-            for dim in dim_list:
-                dim_name = (
-                    dim.get("name", {}).get("en")
-                    or dim.get("name", {}).get("it")
-                    or dim.get("id", "")
-                )
-                codelist_ref = (
-                    dim.get("localRepresentation", {})
-                    .get("enumeration", {})
-                    .get("id", "")
-                )
-                dimensions.append(
-                    {
-                        "id": dim.get("id", ""),
-                        "name": dim_name,
-                        "position": dim.get("position", 0),
-                        "codelist": codelist_ref,
-                    }
-                )
-    except Exception:
-        # Fall back to XML parsing
-        try:
-            root2 = ET.fromstring(resp2.text)
-            for dsd_el in root2.iter(f"{{{NS_STRUCTURE}}}DataStructure"):
-                for name_el in dsd_el.iter(f"{{{NS_COMMON}}}Name"):
-                    if name_el.get("{http://www.w3.org/XML/1998/namespace}lang") == "en":
-                        dataset_name = name_el.text or dataflow_id
-                for dim_el in root2.iter(f"{{{NS_STRUCTURE}}}Dimension"):
-                    dim_id = dim_el.get("id", "")
-                    dim_pos = dim_el.get("position", "")
-                    cl_ref = ""
-                    for enum_ref in dim_el.iter(f"{{{NS_STRUCTURE}}}Enumeration"):
-                        ref = enum_ref.find(f"{{{NS_COMMON}}}Ref")
-                        if ref is not None:
-                            cl_ref = ref.get("id", "")
-                    dimensions.append(
-                        {
-                            "id": dim_id,
-                            "name": dim_id,
-                            "position": dim_pos,
-                            "codelist": cl_ref,
-                        }
-                    )
-        except ET.ParseError as exc:
-            return {"error": f"XML parse error on structure: {exc}"}
-
-    return {
+    result = {
         "dataflow_id": dataflow_id,
         "structure_id": structure_id,
         "dataset_name": dataset_name,
         "dimensions": dimensions,
         "note": (
-            "Use dimension 'id' values to build key_filter strings for get_dataset_data. "
-            "Format: 'val1.val2.val3' matching dimension positions."
+            f"Dataset has {len(dimensions)} dimensions. "
+            "Use get_dimension_values(dataflow_id, dimension_id) to look up valid codes. "
+            "Build key_filter as dot-separated values matching dimension positions "
+            "(use empty string for wildcard, e.g. 'A...' for annual, all areas)."
         ),
     }
 
+    _structure_cache[dataflow_id] = (result, now)
+    return result
+
 
 # ─────────────────────────────────────────────
-# Tool 3 — get_dataset_data
+# Tool 3 — get_dimension_values
+# ─────────────────────────────────────────────
+
+
+def get_dimension_values(
+    dataflow_id: str,
+    dimension_id: str,
+    search: str = None,
+    max_results: int = 50,
+) -> dict:
+    """
+    Look up valid codes for a specific dimension of an ISTAT dataset.
+
+    This is the key navigation tool: use it to find territory codes, age groups,
+    sex codes, education levels, or any other dimension values before building
+    a key_filter for get_dataset_data.
+
+    Codelist results are cached — repeated calls for the same dimension cost 0 API calls.
+
+    args:
+        dataflow_id: Dataset ID (e.g. '22_289')
+        dimension_id: Dimension ID from get_dataset_structure (e.g. 'REF_AREA', 'SEX', 'AGE')
+        search: Optional substring to filter codes by name (case-insensitive, e.g. 'Bologna')
+        max_results: Max codes to return when no search filter (default 50)
+
+    returns:
+        Dict with dimension_id, codelist_id, total_codes, returned, and list of {code, name}
+    """
+    # Step 1: get structure (cached after first call)
+    structure = get_dataset_structure(dataflow_id)
+    if "error" in structure:
+        return {"error": f"Could not get dataset structure: {structure['error']}"}
+
+    # Step 2: find the codelist_id for the requested dimension
+    codelist_id = None
+    for dim in structure.get("dimensions", []):
+        if dim["id"].upper() == dimension_id.upper():
+            codelist_id = dim.get("codelist_id", "")
+            dimension_id = dim["id"]  # normalise case
+            break
+
+    if codelist_id is None:
+        available = [d["id"] for d in structure.get("dimensions", [])]
+        return {
+            "error": f"Dimension '{dimension_id}' not found in dataset {dataflow_id}",
+            "available_dimensions": available,
+        }
+
+    if not codelist_id:
+        return {
+            "error": f"Dimension '{dimension_id}' has no associated codelist (may use inline enumeration)",
+            "dimension_id": dimension_id,
+        }
+
+    # Step 3: check codelist cache
+    now = time.time()
+    if codelist_id in _codelist_cache:
+        cached_codes, ts = _codelist_cache[codelist_id]
+        if now - ts < _CACHE_TTL:
+            return _filter_codes(dimension_id, codelist_id, cached_codes, search, max_results)
+
+    # Step 4: fetch codelist from ISTAT API
+    url = f"{BASE_URL}/codelist/IT1/{codelist_id}"
+    try:
+        resp = _rate_limited_get(url, headers={"Accept": "application/xml"})
+        resp.raise_for_status()
+    except httpx.TimeoutException:
+        return {"error": f"Request timed out fetching codelist {codelist_id}"}
+    except httpx.HTTPError as exc:
+        return {"error": f"HTTP error fetching codelist {codelist_id}: {exc}"}
+
+    try:
+        root = ET.fromstring(resp.text)
+    except ET.ParseError as exc:
+        return {"error": f"XML parse error on codelist: {exc}"}
+
+    # Step 5: parse Code elements
+    codes = []
+    for code_el in root.iter(f"{{{NS_STRUCTURE}}}Code"):
+        code_id = code_el.get("id", "")
+        if not code_id:
+            continue
+        en_name = ""
+        it_name = ""
+        for name_el in code_el:
+            if name_el.tag == f"{{{NS_COMMON}}}Name":
+                lang = name_el.get("{http://www.w3.org/XML/1998/namespace}lang", "")
+                text = (name_el.text or "").strip()
+                if lang == "en":
+                    en_name = text
+                elif lang == "it":
+                    it_name = text
+        name = en_name or it_name or code_id
+        codes.append({"code": code_id, "name": name})
+
+    if not codes:
+        return {
+            "error": f"Codelist {codelist_id} returned 0 codes — may be empty or non-standard",
+            "dimension_id": dimension_id,
+            "codelist_id": codelist_id,
+        }
+
+    # Cache the full list
+    _codelist_cache[codelist_id] = (codes, now)
+
+    return _filter_codes(dimension_id, codelist_id, codes, search, max_results)
+
+
+def _filter_codes(
+    dimension_id: str,
+    codelist_id: str,
+    all_codes: list[dict],
+    search: str,
+    max_results: int,
+) -> dict:
+    """Apply search filter and max_results cap, return structured result."""
+    if search:
+        search_lower = search.lower()
+        filtered = [c for c in all_codes if search_lower in c["name"].lower() or search_lower in c["code"].lower()]
+    else:
+        filtered = all_codes
+
+    total = len(all_codes)
+    matched = len(filtered)
+    returned = filtered[:max_results]
+
+    note = None
+    if search and matched == 0:
+        note = (
+            f"No codes matched '{search}'. "
+            f"Try a broader term or call without search to browse all {total} codes."
+        )
+    elif not search and total > max_results:
+        note = (
+            f"Showing first {max_results} of {total} codes. "
+            f"Use search parameter to filter by name."
+        )
+
+    result = {
+        "dimension_id": dimension_id,
+        "codelist_id": codelist_id,
+        "total_codes": total,
+        "returned": len(returned),
+        "codes": returned,
+    }
+    if note:
+        result["note"] = note
+    if search:
+        result["search"] = search
+        result["matched"] = matched
+    return result
+
+
+# ─────────────────────────────────────────────
+# Tool 4 — get_dataset_data
 # ─────────────────────────────────────────────
 
 
@@ -357,7 +467,11 @@ def get_dataset_data(
     Fetch data from an ISTAT dataset. Always use last_n_observations to limit
     response size unless you specifically need a time range.
 
-    IMPORTANT: Due to a known ISTAT API bug, end_period returns one extra year.
+    IMPORTANT — Build key_filter using codes from get_dimension_values.
+    Format: dot-separated values for each dimension position (use empty for wildcard).
+    Example: 'A.037006.....' = annual data for Bologna (comune 037006), all other dims.
+
+    IMPORTANT — Due to a known ISTAT API bug, end_period returns one extra year.
     This function automatically applies the workaround (subtracts 1 from year).
 
     args:
@@ -365,7 +479,7 @@ def get_dataset_data(
         last_n_observations: Number of most recent observations to return (default 5, max 20)
         start_period: Start year filter, format 'YYYY' (optional)
         end_period: End year filter, format 'YYYY' — workaround applied automatically (optional)
-        key_filter: SDMX key filter string for dimension filtering, e.g. 'A.IT..' (optional, advanced)
+        key_filter: SDMX key filter string, e.g. 'A.037006.....' (optional)
 
     returns:
         Dict with dataset metadata and parsed rows from CSV response
@@ -432,117 +546,3 @@ def get_dataset_data(
             "Rows capped at last_n_observations (max 20) per series."
         ),
     }
-
-
-# ─────────────────────────────────────────────
-# Tool 4 — get_population_data
-# ─────────────────────────────────────────────
-
-
-def get_population_data(
-    territory_code: str = None,
-    last_n_years: int = 5,
-) -> dict:
-    """
-    Get Italian population data by territory. This is a convenience wrapper
-    around the main population dataset (DCIS_POPORESBIL1).
-
-    Territory codes are bare 6-digit ISTAT comune codes (no 'IT' prefix).
-    Examples: '037006' = Bologna, '058091' = Roma, '015146' = Milano,
-              '001272' = Torino, '048017' = Firenze, '063049' = Napoli.
-    Use None for national totals.
-
-    args:
-        territory_code: 6-digit ISTAT comune code, e.g. '037006' for Bologna (None = national)
-        last_n_years: Number of recent years to return (default 5)
-
-    returns:
-        Population data with annual figures
-    """
-    # Dataset 22_289 dimensions: FREQ.REF_AREA.DATA_TYPE.SEX.AGE.MARITAL_STATUS (6 dims)
-    # REF_AREA uses bare 6-digit comune codes — no IT prefix.
-    # Use 5 trailing wildcards to return all breakdowns for the territory.
-    key_filter = None
-    if territory_code:
-        # Strip any accidental IT prefix the caller may have added
-        code = territory_code.lstrip("ITit") if territory_code.upper().startswith("IT") and len(territory_code) > 6 else territory_code
-        key_filter = f"A.{code}....."
-
-    return get_dataset_data(
-        dataflow_id=POPULATION_DATAFLOW,
-        last_n_observations=last_n_years,
-        key_filter=key_filter,
-    )
-
-
-# ─────────────────────────────────────────────
-# Tool 5 — get_employment_data
-# ─────────────────────────────────────────────
-
-
-def get_employment_data(
-    region_code: str = None,
-    last_n_years: int = 5,
-) -> dict:
-    """
-    Get Italian employment rate data by region.
-
-    Region codes are ISTAT LFS codes (not the newer Eurostat NUTS2 codes).
-    Examples: 'ITC4' = Lombardia, 'ITE4' = Lazio, 'ITF3' = Campania,
-              'ITD5' = Emilia-Romagna, 'ITE1' = Toscana, 'IT' = national total.
-    Use get_territory_codes('regions') for the full list.
-
-    args:
-        region_code: ISTAT region code, e.g. 'ITC4' for Lombardia (None = national)
-        last_n_years: Number of recent years (default 5)
-
-    returns:
-        Employment rate statistics
-    """
-    # Dataset 150_915 dimensions (7 total): FREQ.REF_AREA.DATA_TYPE.SEX.AGE.EDU_LEV_HIGHEST.CITIZENSHIP
-    # REF_AREA uses NUTS2 codes WITH IT prefix (e.g. ITC4) or 'IT' for national.
-    # Need 6 trailing wildcards to cover positions 3-7.
-    key_filter = None
-    if region_code:
-        code = region_code if region_code.upper().startswith("IT") else f"IT{region_code}"
-        key_filter = f"A.{code}......"
-
-    return get_dataset_data(
-        dataflow_id=EMPLOYMENT_DATAFLOW,
-        last_n_observations=last_n_years,
-        key_filter=key_filter,
-    )
-
-
-def get_unemployment_data(
-    region_code: str = None,
-    last_n_years: int = 5,
-) -> dict:
-    """
-    Get Italian unemployment rate data by region.
-
-    Region codes are ISTAT LFS codes (not the newer Eurostat NUTS2 codes).
-    Examples: 'ITC4' = Lombardia, 'ITE4' = Lazio, 'ITF3' = Campania,
-              'ITD5' = Emilia-Romagna, 'ITE1' = Toscana, 'IT' = national total.
-    Use get_territory_codes('regions') for the full list.
-
-    args:
-        region_code: ISTAT region code, e.g. 'ITE4' for Lazio (None = national)
-        last_n_years: Number of recent years (default 5)
-
-    returns:
-        Unemployment rate statistics
-    """
-    # Dataset 151_914 dimensions (8 total): FREQ.REF_AREA.DATA_TYPE.SEX.AGE.EDU_LEV_HIGHEST.CITIZENSHIP.DURATION_UNEMPLOYMENT
-    # REF_AREA uses NUTS2 codes WITH IT prefix (e.g. ITI4) or 'IT' for national.
-    # Need 7 trailing wildcards to cover positions 3-8.
-    key_filter = None
-    if region_code:
-        code = region_code if region_code.upper().startswith("IT") else f"IT{region_code}"
-        key_filter = f"A.{code}......."
-
-    return get_dataset_data(
-        dataflow_id=UNEMPLOYMENT_DATAFLOW,
-        last_n_observations=last_n_years,
-        key_filter=key_filter,
-    )

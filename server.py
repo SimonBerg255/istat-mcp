@@ -20,15 +20,12 @@ from fastmcp import FastMCP
 from tools import (
     search_datasets,
     get_dataset_structure,
+    get_dimension_values,
     get_dataset_data,
-    get_population_data,
-    get_employment_data,
-    get_unemployment_data,
 )
 from resources import (
     get_dataset_catalog,
     get_api_usage_guide,
-    get_territory_codes,
 )
 
 # ─────────────────────────────────────────────
@@ -65,15 +62,16 @@ mcp = FastMCP(
         "aggregates.\n\n"
         "IMPORTANT — Rate limit: ISTAT allows only 5 requests per minute. The server enforces "
         "this automatically but you must not issue many tool calls in rapid succession.\n\n"
-        "Recommended workflow:\n"
-        "1. search_datasets — find dataset IDs by keyword\n"
-        "2. get_dataset_structure — understand available dimensions and filters\n"
-        "3. get_dataset_data — fetch actual data with filters\n\n"
-        "Convenience wrappers: get_population_data, get_employment_data\n\n"
-        "Static resources (no API call needed): dataset_catalog, api_usage_guide, "
-        "territory_codes/{type}"
+        "Recommended 4-step workflow:\n"
+        "1. search_datasets(query) — find dataset IDs by keyword\n"
+        "2. get_dataset_structure(dataflow_id) — see all dimensions and their codelist IDs\n"
+        "3. get_dimension_values(dataflow_id, dimension_id, search) — look up valid codes "
+        "for any dimension (territory, age, sex, etc.)\n"
+        "4. get_dataset_data(dataflow_id, key_filter, ...) — fetch actual data\n\n"
+        "Steps 2 and 3 use caching — subsequent calls for the same dataset cost 0 API calls.\n\n"
+        "Static resources (no API call): dataset_catalog, api_usage_guide"
     ),
-    version="1.0.0",
+    version="2.0.0",
     website_url="https://esploradati.istat.it",
 )
 
@@ -83,10 +81,8 @@ mcp = FastMCP(
 
 mcp.tool(name="search_datasets")(search_datasets)
 mcp.tool(name="get_dataset_structure")(get_dataset_structure)
+mcp.tool(name="get_dimension_values")(get_dimension_values)
 mcp.tool(name="get_dataset_data")(get_dataset_data)
-mcp.tool(name="get_population_data")(get_population_data)
-mcp.tool(name="get_employment_data")(get_employment_data)
-mcp.tool(name="get_unemployment_data")(get_unemployment_data)
 
 # ─────────────────────────────────────────────
 # Register resources
@@ -94,7 +90,6 @@ mcp.tool(name="get_unemployment_data")(get_unemployment_data)
 
 mcp.resource("resource://istat/catalog")(get_dataset_catalog)
 mcp.resource("resource://istat/api_guide")(get_api_usage_guide)
-mcp.resource("resource://istat/territory/{territory_type}")(get_territory_codes)
 
 # ─────────────────────────────────────────────
 # Custom routes
