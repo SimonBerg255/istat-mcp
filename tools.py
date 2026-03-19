@@ -438,11 +438,14 @@ def get_population_data(
     Get Italian population data by territory. This is a convenience wrapper
     around the main population dataset (DCIS_POPORESBIL1).
 
-    Territory codes follow ISTAT municipality codes (e.g. '001272' for Turin,
-    '015146' for Milan, '058091' for Rome). Use None for national totals.
+    Territory codes use the ISTAT ITTER107 format with 'IT' prefix.
+    Municipality codes: 'IT' + 6-digit ISTAT comune code.
+    Examples: 'IT037006' = Bologna, 'IT058091' = Roma, 'IT015146' = Milano,
+              'IT001272' = Torino. Use None for national totals.
+    The bare 6-digit form (e.g. '037006') is also accepted and auto-prefixed.
 
     args:
-        territory_code: ISTAT municipality or region code (None = national total)
+        territory_code: ITTER107 code for municipality or region (None = national total)
         last_n_years: Number of recent years to return (default 5)
 
     returns:
@@ -450,11 +453,12 @@ def get_population_data(
     """
     # Build key filter if a territory code is supplied.
     # DCIS_POPORESBIL1 key structure: FREQ.ITTER107.SEXISTAT1.ETA1.STATCIV2.TIPO_DATO15
-    # For a simple territory filter we fix the territory position and leave others as wildcards.
+    # ITTER107 codes always use the 'IT' prefix (e.g. IT037006 for Bologna, IT058091 for Rome).
+    # Accept both forms from callers: '037006' or 'IT037006'.
     key_filter = None
     if territory_code:
-        # Position 2 is ITTER107 (territory). Use dots as wildcards for other positions.
-        key_filter = f"A.{territory_code}...."
+        code = territory_code if territory_code.upper().startswith("IT") else f"IT{territory_code}"
+        key_filter = f"A.{code}...."
 
     return get_dataset_data(
         dataflow_id=POPULATION_DATAFLOW,
@@ -477,16 +481,20 @@ def get_employment_data(
     Returns employment rate, unemployment rate, and active population figures.
 
     args:
-        region_code: ISTAT region code (None = national data)
+        region_code: ITTER107 region code, e.g. 'ITC4' for Lombardia, 'ITI4' for Lazio.
+                     Use get_territory_codes resource for the full list. (None = national data)
         last_n_years: Number of recent years (default 5)
 
     returns:
         Employment statistics
     """
     # DCCV_TAXOCCU1 key: FREQ.ITTER107.SESSO.ETA1.TITOLO_STUDIO.TIPO_DATO15
+    # ITTER107 codes require 'IT' prefix (e.g. ITC4 for Lombardia).
+    # Accept both 'ITC4' and 'C4' — prepend IT if missing.
     key_filter = None
     if region_code:
-        key_filter = f"A.{region_code}...."
+        code = region_code if region_code.upper().startswith("IT") else f"IT{region_code}"
+        key_filter = f"A.{code}...."
 
     return get_dataset_data(
         dataflow_id=EMPLOYMENT_DATAFLOW,

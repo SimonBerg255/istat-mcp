@@ -171,56 +171,65 @@ COMMON ERRORS
 
 _TERRITORY_DATA = {
     "regions": """\
-ITALIAN REGIONS — ISTAT NUTS2 Codes
-=====================================
-Code      Region
---------  ---------------------------
-ITC1      Piemonte
-ITC2      Valle d'Aosta / Vallée d'Aoste
-ITC3      Liguria
-ITC4      Lombardia
-ITH1      Provincia Autonoma Bolzano/Bozen
-ITH2      Provincia Autonoma Trento
-ITH3      Veneto
-ITH4      Friuli-Venezia Giulia
-ITH5      Emilia-Romagna
-ITI1      Toscana
-ITI2      Umbria
-ITI3      Marche
-ITI4      Lazio
-ITF1      Abruzzo
-ITF2      Molise
-ITF3      Campania
-ITF4      Puglia
-ITF5      Basilicata
-ITF6      Calabria
-ITG1      Sicilia
-ITG2      Sardegna
+ITALIAN REGIONS — ISTAT NUTS2 Codes (ITTER107)
+================================================
+ITTER107 Code   Region
+--------------  ---------------------------
+ITC1            Piemonte
+ITC2            Valle d'Aosta / Vallée d'Aoste
+ITC3            Liguria
+ITC4            Lombardia
+ITH1            Provincia Autonoma Bolzano/Bozen
+ITH2            Provincia Autonoma Trento
+ITH3            Veneto
+ITH4            Friuli-Venezia Giulia
+ITH5            Emilia-Romagna
+ITI1            Toscana
+ITI2            Umbria
+ITI3            Marche
+ITI4            Lazio
+ITF1            Abruzzo
+ITF2            Molise
+ITF3            Campania
+ITF4            Puglia
+ITF5            Basilicata
+ITF6            Calabria
+ITG1            Sicilia
+ITG2            Sardegna
 
-Note: For municipal-level datasets use 6-digit ISTAT municipality codes.
+IMPORTANT: Region codes already start with 'IT' — use them as-is when calling tools.
+For municipality (comune) level data use 8-char codes: IT + 6-digit ISTAT comune code.
+Examples: IT037006 = Bologna, IT058091 = Roma, IT015146 = Milano, IT001272 = Torino
 """,
     "metro_cities": """\
-ITALIAN METROPOLITAN CITIES — ISTAT Codes
-==========================================
-Code    City
-------  --------------------------
-201     Torino
-215     Genova
-202     Milano (Città Metropolitana)
-237     Venezia
-239     Bologna
-248     Firenze
-258     Roma
-263     Napoli
-272     Bari
-275     Reggio Calabria
-282     Palermo
-292     Catania
-204     Cagliari
-217     Messina
+ITALIAN METROPOLITAN CITIES — ISTAT Territory Codes (ITTER107)
+===============================================================
+ITTER107 Code   City
+--------------  --------------------------
+IT201           Torino (Metro)
+IT215           Genova (Metro)
+IT202           Milano (Metro)
+IT237           Venezia (Metro)
+IT239           Bologna (Metro)
+IT248           Firenze (Metro)
+IT258           Roma (Metro)
+IT263           Napoli (Metro)
+IT272           Bari (Metro)
+IT275           Reggio Calabria (Metro)
+IT282           Palermo (Metro)
+IT292           Catania (Metro)
+IT204           Cagliari (Metro)
+IT217           Messina (Metro)
 
-Note: These are province-level codes. For municipality data, use the
-6-digit comune codes (e.g., 058091 for Roma Capitale).
+IMPORTANT: Always use the full code including the 'IT' prefix when calling tools.
+For municipality (comune) level data, use 6-digit codes with IT prefix:
+  IT037006  =  Bologna comune
+  IT058091  =  Roma comune (Roma Capitale)
+  IT015146  =  Milano comune
+  IT001272  =  Torino comune
+  IT048017  =  Firenze comune
+  IT063049  =  Napoli comune
+  IT080063  =  Reggio Calabria comune
 """,
     "provinces": """\
 ITALIAN PROVINCES — ISTAT Numeric Codes (selection)
