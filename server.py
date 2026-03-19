@@ -23,6 +23,7 @@ from tools import (
     get_dataset_data,
     get_population_data,
     get_employment_data,
+    get_unemployment_data,
 )
 from resources import (
     get_dataset_catalog,
@@ -85,6 +86,7 @@ mcp.tool(name="get_dataset_structure")(get_dataset_structure)
 mcp.tool(name="get_dataset_data")(get_dataset_data)
 mcp.tool(name="get_population_data")(get_population_data)
 mcp.tool(name="get_employment_data")(get_employment_data)
+mcp.tool(name="get_unemployment_data")(get_unemployment_data)
 
 # ─────────────────────────────────────────────
 # Register resources

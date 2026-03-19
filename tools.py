@@ -32,9 +32,18 @@ NS_MESSAGE = "http://www.sdmx.org/resources/sdmxml/schemas/v2_1/message"
 ACCEPT_CSV = "application/vnd.sdmx.data+csv;version=1.0.0"
 ACCEPT_STRUCT_JSON = "application/vnd.sdmx.structure+json;version=2.0.0"
 
-# Known convenience dataflows
-POPULATION_DATAFLOW = "DCIS_POPORESBIL1"
-EMPLOYMENT_DATAFLOW = "DCCV_TAXOCCU1"
+# Known convenience dataflows (verified against live ISTAT API)
+# 22_289: "Resident population on 1st January" — municipal level, annual
+#   Dimensions: FREQ.REF_AREA.DATA_TYPE.SEX.AGE.MARITAL_STATUS
+#   REF_AREA format: bare 6-digit ISTAT comune code, e.g. "037006" for Bologna
+POPULATION_DATAFLOW = "22_289"
+
+# 150_915: "Employment rate" — regional/national, annual
+# 151_914: "Unemployment rate" — regional/national, annual
+#   Dimensions: FREQ.REF_AREA.DATA_TYPE.SEX.AGE.EDU_LEV_HIGHEST.CITIZENSHIP.[extra]
+#   REF_AREA format: NUTS2 code WITH IT prefix, e.g. "ITC4" for Lombardia, "IT" for national
+EMPLOYMENT_DATAFLOW = "150_915"
+UNEMPLOYMENT_DATAFLOW = "151_914"
 
 # ─────────────────────────────────────────────
 # Rate limiter (5 req / 60 sec)
@@ -438,27 +447,26 @@ def get_population_data(
     Get Italian population data by territory. This is a convenience wrapper
     around the main population dataset (DCIS_POPORESBIL1).
 
-    Territory codes use the ISTAT ITTER107 format with 'IT' prefix.
-    Municipality codes: 'IT' + 6-digit ISTAT comune code.
-    Examples: 'IT037006' = Bologna, 'IT058091' = Roma, 'IT015146' = Milano,
-              'IT001272' = Torino. Use None for national totals.
-    The bare 6-digit form (e.g. '037006') is also accepted and auto-prefixed.
+    Territory codes are bare 6-digit ISTAT comune codes (no 'IT' prefix).
+    Examples: '037006' = Bologna, '058091' = Roma, '015146' = Milano,
+              '001272' = Torino, '048017' = Firenze, '063049' = Napoli.
+    Use None for national totals.
 
     args:
-        territory_code: ITTER107 code for municipality or region (None = national total)
+        territory_code: 6-digit ISTAT comune code, e.g. '037006' for Bologna (None = national)
         last_n_years: Number of recent years to return (default 5)
 
     returns:
         Population data with annual figures
     """
-    # Build key filter if a territory code is supplied.
-    # DCIS_POPORESBIL1 key structure: FREQ.ITTER107.SEXISTAT1.ETA1.STATCIV2.TIPO_DATO15
-    # ITTER107 codes always use the 'IT' prefix (e.g. IT037006 for Bologna, IT058091 for Rome).
-    # Accept both forms from callers: '037006' or 'IT037006'.
+    # Dataset 22_289 dimensions: FREQ.REF_AREA.DATA_TYPE.SEX.AGE.MARITAL_STATUS (6 dims)
+    # REF_AREA uses bare 6-digit comune codes — no IT prefix.
+    # Use 5 trailing wildcards to return all breakdowns for the territory.
     key_filter = None
     if territory_code:
-        code = territory_code if territory_code.upper().startswith("IT") else f"IT{territory_code}"
-        key_filter = f"A.{code}...."
+        # Strip any accidental IT prefix the caller may have added
+        code = territory_code.lstrip("ITit") if territory_code.upper().startswith("IT") and len(territory_code) > 6 else territory_code
+        key_filter = f"A.{code}....."
 
     return get_dataset_data(
         dataflow_id=POPULATION_DATAFLOW,
@@ -477,27 +485,64 @@ def get_employment_data(
     last_n_years: int = 5,
 ) -> dict:
     """
-    Get Italian employment and labour market data.
-    Returns employment rate, unemployment rate, and active population figures.
+    Get Italian employment rate data by region.
+
+    Region codes are ISTAT LFS codes (not the newer Eurostat NUTS2 codes).
+    Examples: 'ITC4' = Lombardia, 'ITE4' = Lazio, 'ITF3' = Campania,
+              'ITD5' = Emilia-Romagna, 'ITE1' = Toscana, 'IT' = national total.
+    Use get_territory_codes('regions') for the full list.
 
     args:
-        region_code: ITTER107 region code, e.g. 'ITC4' for Lombardia, 'ITI4' for Lazio.
-                     Use get_territory_codes resource for the full list. (None = national data)
+        region_code: ISTAT region code, e.g. 'ITC4' for Lombardia (None = national)
         last_n_years: Number of recent years (default 5)
 
     returns:
-        Employment statistics
+        Employment rate statistics
     """
-    # DCCV_TAXOCCU1 key: FREQ.ITTER107.SESSO.ETA1.TITOLO_STUDIO.TIPO_DATO15
-    # ITTER107 codes require 'IT' prefix (e.g. ITC4 for Lombardia).
-    # Accept both 'ITC4' and 'C4' — prepend IT if missing.
+    # Dataset 150_915 dimensions (7 total): FREQ.REF_AREA.DATA_TYPE.SEX.AGE.EDU_LEV_HIGHEST.CITIZENSHIP
+    # REF_AREA uses NUTS2 codes WITH IT prefix (e.g. ITC4) or 'IT' for national.
+    # Need 6 trailing wildcards to cover positions 3-7.
     key_filter = None
     if region_code:
         code = region_code if region_code.upper().startswith("IT") else f"IT{region_code}"
-        key_filter = f"A.{code}...."
+        key_filter = f"A.{code}......"
 
     return get_dataset_data(
         dataflow_id=EMPLOYMENT_DATAFLOW,
+        last_n_observations=last_n_years,
+        key_filter=key_filter,
+    )
+
+
+def get_unemployment_data(
+    region_code: str = None,
+    last_n_years: int = 5,
+) -> dict:
+    """
+    Get Italian unemployment rate data by region.
+
+    Region codes are ISTAT LFS codes (not the newer Eurostat NUTS2 codes).
+    Examples: 'ITC4' = Lombardia, 'ITE4' = Lazio, 'ITF3' = Campania,
+              'ITD5' = Emilia-Romagna, 'ITE1' = Toscana, 'IT' = national total.
+    Use get_territory_codes('regions') for the full list.
+
+    args:
+        region_code: ISTAT region code, e.g. 'ITE4' for Lazio (None = national)
+        last_n_years: Number of recent years (default 5)
+
+    returns:
+        Unemployment rate statistics
+    """
+    # Dataset 151_914 dimensions (8 total): FREQ.REF_AREA.DATA_TYPE.SEX.AGE.EDU_LEV_HIGHEST.CITIZENSHIP.DURATION_UNEMPLOYMENT
+    # REF_AREA uses NUTS2 codes WITH IT prefix (e.g. ITI4) or 'IT' for national.
+    # Need 7 trailing wildcards to cover positions 3-8.
+    key_filter = None
+    if region_code:
+        code = region_code if region_code.upper().startswith("IT") else f"IT{region_code}"
+        key_filter = f"A.{code}......."
+
+    return get_dataset_data(
+        dataflow_id=UNEMPLOYMENT_DATAFLOW,
         last_n_observations=last_n_years,
         key_filter=key_filter,
     )

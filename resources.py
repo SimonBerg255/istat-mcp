@@ -171,35 +171,40 @@ COMMON ERRORS
 
 _TERRITORY_DATA = {
     "regions": """\
-ITALIAN REGIONS — ISTAT NUTS2 Codes (ITTER107)
-================================================
-ITTER107 Code   Region
---------------  ---------------------------
-ITC1            Piemonte
-ITC2            Valle d'Aosta / Vallée d'Aoste
-ITC3            Liguria
-ITC4            Lombardia
-ITH1            Provincia Autonoma Bolzano/Bozen
-ITH2            Provincia Autonoma Trento
-ITH3            Veneto
-ITH4            Friuli-Venezia Giulia
-ITH5            Emilia-Romagna
-ITI1            Toscana
-ITI2            Umbria
-ITI3            Marche
-ITI4            Lazio
-ITF1            Abruzzo
-ITF2            Molise
-ITF3            Campania
-ITF4            Puglia
-ITF5            Basilicata
-ITF6            Calabria
-ITG1            Sicilia
-ITG2            Sardegna
+ITALIAN REGIONS — Codes for get_employment_data and get_unemployment_data
+==========================================================================
+Use these codes (verified against the live ISTAT labour force datasets).
 
-IMPORTANT: Region codes already start with 'IT' — use them as-is when calling tools.
-For municipality (comune) level data use 8-char codes: IT + 6-digit ISTAT comune code.
-Examples: IT037006 = Bologna, IT058091 = Roma, IT015146 = Milano, IT001272 = Torino
+Code    Region
+------  ---------------------------
+IT      Italy (national total)
+ITC1    Piemonte
+ITC2    Valle d'Aosta
+ITC3    Liguria
+ITC4    Lombardia
+ITD1    Provincia Autonoma Bolzano/Bozen
+ITD2    Provincia Autonoma Trento
+ITD3    Veneto
+ITD4    Friuli-Venezia Giulia
+ITD5    Emilia-Romagna
+ITE1    Toscana
+ITE2    Umbria
+ITE3    Marche
+ITE4    Lazio
+ITF1    Abruzzo
+ITF2    Molise
+ITF3    Campania
+ITF4    Puglia
+ITF5    Basilicata
+ITF6    Calabria
+ITG1    Sicilia
+ITG2    Sardegna
+
+NOTE: These are the codes used in ISTAT labour force (LFS) datasets. They differ
+from the newer Eurostat NUTS2 codes (e.g. Lazio = ITE4 here, not ITI4).
+
+For population data (get_population_data), use bare 6-digit comune codes instead:
+  037006 = Bologna, 058091 = Roma, 015146 = Milano, 001272 = Torino, 048017 = Firenze
 """,
     "metro_cities": """\
 ITALIAN METROPOLITAN CITIES — ISTAT Territory Codes (ITTER107)
@@ -221,15 +226,18 @@ IT292           Catania (Metro)
 IT204           Cagliari (Metro)
 IT217           Messina (Metro)
 
-IMPORTANT: Always use the full code including the 'IT' prefix when calling tools.
-For municipality (comune) level data, use 6-digit codes with IT prefix:
-  IT037006  =  Bologna comune
-  IT058091  =  Roma comune (Roma Capitale)
-  IT015146  =  Milano comune
-  IT001272  =  Torino comune
-  IT048017  =  Firenze comune
-  IT063049  =  Napoli comune
-  IT080063  =  Reggio Calabria comune
+IMPORTANT: For municipality (comune) level data (e.g. get_population_data), use
+bare 6-digit codes WITHOUT any prefix:
+  037006  =  Bologna comune
+  058091  =  Roma comune (Roma Capitale)
+  015146  =  Milano comune
+  001272  =  Torino comune
+  048017  =  Firenze comune
+  063049  =  Napoli comune
+  080063  =  Reggio Calabria comune
+
+For regional data (e.g. get_employment_data, get_unemployment_data) use the
+NUTS2 codes from the 'regions' table (ITC4, ITI4 etc.) — those already include IT prefix.
 """,
     "provinces": """\
 ITALIAN PROVINCES — ISTAT Numeric Codes (selection)
