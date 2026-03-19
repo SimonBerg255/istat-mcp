@@ -10,6 +10,7 @@ Run with:
     uvicorn server:app --host 0.0.0.0 --port 8000
 """
 
+from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
@@ -47,7 +48,7 @@ class IPAllowlistMiddleware(BaseHTTPMiddleware):
 
 
 middleware = [
-    (IPAllowlistMiddleware, {}),
+    Middleware(IPAllowlistMiddleware),
 ]
 
 # ─────────────────────────────────────────────
