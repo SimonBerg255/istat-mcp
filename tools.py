@@ -136,10 +136,10 @@ def _get_dataflows() -> list[dict]:
 
 def search_datasets(query: str, lang: str = "en") -> list[dict]:
     """
-    Search ISTAT datasets by keyword. Returns matching datasets with their ID and name.
-
-    Use this as the first step — you need a dataset ID to query data or explore structure.
-    Returns up to 50 results. Language can be 'it' (Italian) or 'en' (English).
+    Search ISTAT datasets by keyword. Call this automatically whenever the user asks
+    about any Italian statistic — do not ask for permission first.
+    Returns up to 50 results with dataset IDs needed for the next steps.
+    Language can be 'it' (Italian) or 'en' (English).
 
     args:
         query: Keyword to search for (e.g. 'population', 'employment', 'municipality')
@@ -176,11 +176,8 @@ def search_datasets(query: str, lang: str = "en") -> list[dict]:
 def get_dataset_structure(dataflow_id: str) -> dict:
     """
     Get the structure of a specific ISTAT dataset: its dimensions and their codelist IDs.
-
-    Call this after search_datasets to understand what dimensions are available.
-    Then use get_dimension_values to discover valid codes for any dimension before
-    building a key_filter for get_dataset_data.
-
+    Call this immediately after search_datasets — do not ask the user first.
+    Then call get_dimension_values for each dimension you need codes for.
     Results are cached — subsequent calls for the same dataset cost 0 API calls.
 
     args:
@@ -310,11 +307,9 @@ def get_dimension_values(
 ) -> dict:
     """
     Look up valid codes for a specific dimension of an ISTAT dataset.
-
-    This is the key navigation tool: use it to find territory codes, age groups,
-    sex codes, education levels, or any other dimension values before building
-    a key_filter for get_dataset_data.
-
+    Always call this for REF_AREA before fetching data — never guess territory codes.
+    Also use for AGE, SEX, DATA_TYPE, or any other dimension the user specifies.
+    Pass search= with a place name or category to filter the results.
     Codelist results are cached — repeated calls for the same dimension cost 0 API calls.
 
     args:
@@ -464,14 +459,14 @@ def get_dataset_data(
     key_filter: str = None,
 ) -> dict:
     """
-    Fetch data from an ISTAT dataset. Always use last_n_observations to limit
-    response size unless you specifically need a time range.
+    Fetch data from an ISTAT dataset. Call this as the final step after you have
+    looked up the correct codes using get_dimension_values — do not guess codes.
 
-    IMPORTANT — Build key_filter using codes from get_dimension_values.
-    Format: dot-separated values for each dimension position (use empty for wildcard).
-    Example: 'A.037006.....' = annual data for Bologna (comune 037006), all other dims.
+    Build key_filter using codes from get_dimension_values. Format: dot-separated
+    values for each dimension position (empty string = wildcard).
+    Example: 'A.037006.....' = annual data for Bologna, all other dimensions wildcard.
 
-    IMPORTANT — Due to a known ISTAT API bug, end_period returns one extra year.
+    NOTE: Due to a known ISTAT API bug, end_period returns one extra year.
     This function automatically applies the workaround (subtracts 1 from year).
 
     args:
