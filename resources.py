@@ -118,13 +118,19 @@ Workaround: always request endPeriod = desired_year - 1.
 This workaround is applied AUTOMATICALLY by get_dataset_data.
 You do not need to subtract 1 yourself when calling tools.
 
-LIMITING RESPONSE SIZE
------------------------
-ISTAT datasets can span decades with thousands of rows per series.
-ALWAYS use lastNObservations (or last_n_observations in tools) to limit data.
-• Recommended: last_n_observations=5 (default) for recent trends
-• Maximum enforced by this server: last_n_observations=20
-• Requests without a limit can download hundreds of MB and time out.
+LIMITING RESPONSE SIZE — CRITICAL
+-----------------------------------
+ISTAT datasets have many cross-tabulated dimensions (territory × sex × age × status).
+Wildcarding all dimensions returns THOUSANDS of rows and will be truncated at 25.
+
+Two controls:
+1. last_n_observations: limits time points per series (default 5, max 20)
+2. key_filter dimension pinning: MUCH more important — pin every dimension
+   you don't need broken down by looking up 'total'/'all' codes via
+   get_dimension_values. Only wildcard the dimension being compared.
+
+GOOD: key_filter='A.037006.1.9.TOTAL.99' → ~1 row/year (total pop of Bologna)
+BAD:  key_filter='A.037006.....'          → 15,000+ rows (truncated to 25)
 
 RECOMMENDED 4-STEP WORKFLOW
 -----------------------------

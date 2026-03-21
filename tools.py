@@ -134,38 +134,63 @@ def _get_dataflows() -> list[dict]:
 # ─────────────────────────────────────────────
 
 
-def search_datasets(query: str, lang: str = "en") -> list[dict]:
+def search_datasets(query: str, lang: str = "en") -> dict:
     """
     Search ISTAT datasets by keyword. Call this automatically whenever the user asks
     about any Italian statistic — do not ask for permission first.
-    Returns up to 50 results with dataset IDs needed for the next steps.
-    Language can be 'it' (Italian) or 'en' (English).
+    Returns up to 30 results with dataset IDs needed for the next steps.
+
+    SEARCH TIPS — many ISTAT datasets only have Italian names. Try:
+    - English first, then Italian if no results (e.g. 'population' → 'popolazione')
+    - Common translations: population=popolazione, employment=occupazione,
+      unemployment=disoccupazione, births=natalità/nascite, deaths=mortalità/decessi,
+      income=reddito, GDP=PIL, housing=abitazioni, crime=delitti, school=scuole,
+      health=salute/sanità, waste=rifiuti, tourism=turismo, agriculture=agricoltura
+    - Multi-word queries match ALL words (AND logic), order doesn't matter
 
     args:
-        query: Keyword to search for (e.g. 'population', 'employment', 'municipality')
+        query: Keywords to search for (e.g. 'population', 'tasso occupazione')
         lang: Language for dataset names, 'it' or 'en' (default: 'en')
 
     returns:
-        List of matching datasets with 'id' and 'name' fields
+        Dict with total_results, results list, and search tips if no matches
     """
     try:
         flows = _get_dataflows()
     except Exception as exc:
-        return [{"error": "Failed to retrieve dataset list", "details": str(exc)}]
+        return {"error": "Failed to retrieve dataset list", "details": str(exc)}
 
-    query_lower = query.lower()
+    # Split query into words — ALL must match (AND logic)
+    query_words = query.lower().split()
     results = []
 
     for flow in flows:
         names = flow.get("names", {})
-        # Try requested lang, fall back to the other
-        name = names.get(lang) or names.get("it") or names.get("en") or ""
-        if query_lower in name.lower():
-            results.append({"id": flow["id"], "name": name})
-        if len(results) >= 50:
+        # Search across BOTH languages for better recall
+        en_name = (names.get("en") or "").lower()
+        it_name = (names.get("it") or "").lower()
+        search_text = f"{en_name} {it_name}"
+
+        if all(word in search_text for word in query_words):
+            display_name = names.get(lang) or names.get("it") or names.get("en") or ""
+            results.append({"id": flow["id"], "name": display_name})
+        if len(results) >= 30:
             break
 
-    return results
+    response: dict = {
+        "query": query,
+        "total_results": len(results),
+        "results": results,
+    }
+
+    if not results:
+        response["tip"] = (
+            "No datasets matched. Try: (1) Italian keywords — e.g. 'popolazione' "
+            "instead of 'population'; (2) shorter/broader terms — e.g. 'occupaz' "
+            "instead of 'employment rate'; (3) single keyword instead of a phrase."
+        )
+
+    return response
 
 
 # ─────────────────────────────────────────────
@@ -192,13 +217,14 @@ def get_dataset_structure(dataflow_id: str) -> dict:
         if now - ts < _CACHE_TTL:
             return cached
 
-    # Single call with ?references=all returns dataflow + embedded DSD in one XML response
+    # ?references=children returns dataflow + DSD structure (17KB) without
+    # embedding full codelist content (?references=all would be 9.5MB+).
     url = f"{BASE_URL}/dataflow/IT1/{dataflow_id}"
     try:
         resp = _rate_limited_get(
             url,
             headers={"Accept": "application/xml"},
-            params={"references": "all"},
+            params={"references": "children"},
         )
         resp.raise_for_status()
     except httpx.TimeoutException:
@@ -260,7 +286,7 @@ def get_dataset_structure(dataflow_id: str) -> dict:
                 if ref is not None:
                     codelist_id = ref.get("id", "")
 
-            if dim_id:
+            if dim_id and dim_pos:  # skip empty entries from ?references=children
                 dimensions.append({
                     "id": dim_id,
                     "position": dim_pos,
@@ -277,16 +303,26 @@ def get_dataset_structure(dataflow_id: str) -> dict:
             "dataflow_id": dataflow_id,
         }
 
+    # Build key_filter template so the agent knows exactly how many dots
+    template_parts = []
+    for dim in dimensions:
+        template_parts.append(f"<{dim['id']}>")
+    key_template = ".".join(template_parts)
+
     result = {
         "dataflow_id": dataflow_id,
         "structure_id": structure_id,
         "dataset_name": dataset_name,
+        "dimension_count": len(dimensions),
         "dimensions": dimensions,
+        "key_filter_template": key_template,
         "note": (
             f"Dataset has {len(dimensions)} dimensions. "
-            "Use get_dimension_values(dataflow_id, dimension_id) to look up valid codes. "
-            "Build key_filter as dot-separated values matching dimension positions "
-            "(use empty string for wildcard, e.g. 'A...' for annual, all areas)."
+            f"Key filter template: {key_template} — replace <DIM> with a code or leave empty for wildcard. "
+            "IMPORTANT: To avoid huge responses, pin as many dimensions as possible. "
+            "Use get_dimension_values to find codes for 'total' or 'all ages' rather than wildcarding. "
+            "Example: 'A.037006.1.9.TOTAL.99' is much better than 'A.037006.....' "
+            "(the latter returns thousands of rows for every sex×age×status combination)."
         ),
     }
 
@@ -308,14 +344,20 @@ def get_dimension_values(
     """
     Look up valid codes for a specific dimension of an ISTAT dataset.
     Always call this for REF_AREA before fetching data — never guess territory codes.
-    Also use for AGE, SEX, DATA_TYPE, or any other dimension the user specifies.
-    Pass search= with a place name or category to filter the results.
-    Codelist results are cached — repeated calls for the same dimension cost 0 API calls.
+    Also call this for SEX, AGE, DATA_TYPE to find 'total'/'all' codes for dimension
+    pinning (critical to avoid getting thousands of rows back from get_dataset_data).
+
+    Common searches for finding totals:
+    - SEX: search='total' → usually code '9' or 'T'
+    - AGE: search='total' → usually code 'TOTAL' or 'Y_GE15'
+    - DATA_TYPE: search='total' or search='population' or search='rate'
+
+    Codelist results are cached — repeated calls cost 0 API calls.
 
     args:
         dataflow_id: Dataset ID (e.g. '22_289')
         dimension_id: Dimension ID from get_dataset_structure (e.g. 'REF_AREA', 'SEX', 'AGE')
-        search: Optional substring to filter codes by name (case-insensitive, e.g. 'Bologna')
+        search: Substring to filter codes by name (case-insensitive, e.g. 'Bologna', 'total')
         max_results: Max codes to return when no search filter (default 50)
 
     returns:
@@ -459,25 +501,31 @@ def get_dataset_data(
     key_filter: str = None,
 ) -> dict:
     """
-    Fetch data from an ISTAT dataset. Call this as the final step after you have
-    looked up the correct codes using get_dimension_values — do not guess codes.
+    Fetch data from an ISTAT dataset. Call this as the final step after looking up
+    codes with get_dimension_values. NEVER guess codes — always look them up first.
 
-    Build key_filter using codes from get_dimension_values. Format: dot-separated
-    values for each dimension position (empty string = wildcard).
-    Example: 'A.037006.....' = annual data for Bologna, all other dimensions wildcard.
+    CRITICAL: Pin as many dimensions as possible in key_filter. Wildcarding all
+    dimensions returns thousands of rows (every sex×age×status combination) and
+    the response will be truncated at 25 rows. Use get_dimension_values to find
+    'total'/'all' codes for dimensions you don't need broken down.
 
-    NOTE: Due to a known ISTAT API bug, end_period returns one extra year.
-    This function automatically applies the workaround (subtracts 1 from year).
+    GOOD:  'A.037006.1.9.TOTAL.99'  → ~1 row/year (total pop of Bologna)
+    BAD:   'A.037006.....'           → 15,000+ rows (every combination), truncated
+
+    Format: dot-separated values matching dimension positions from key_filter_template.
+    Empty between dots = wildcard. Number of dots must match number of dimensions.
+
+    NOTE: ISTAT endPeriod bug (returns +1 year) is corrected automatically.
 
     args:
-        dataflow_id: Dataset ID from search_datasets (e.g. '22_289')
-        last_n_observations: Number of most recent observations to return (default 5, max 20)
-        start_period: Start year filter, format 'YYYY' (optional)
-        end_period: End year filter, format 'YYYY' — workaround applied automatically (optional)
-        key_filter: SDMX key filter string, e.g. 'A.037006.....' (optional)
+        dataflow_id: Dataset ID (e.g. '22_289')
+        last_n_observations: Most recent observations per series (default 5, max 20)
+        start_period: Start year 'YYYY' (optional)
+        end_period: End year 'YYYY' — bug workaround applied automatically (optional)
+        key_filter: SDMX key filter, e.g. 'A.037006.1.9.TOTAL.99' (optional but strongly recommended)
 
     returns:
-        Dict with dataset metadata and parsed rows from CSV response
+        Dict with data rows (max 25), truncation warning if applicable
     """
     # Enforce max cap to prevent downloading hundreds of MB
     last_n_observations = min(last_n_observations, 20)
@@ -521,7 +569,7 @@ def get_dataset_data(
     # Parse CSV response
     try:
         reader = csv.DictReader(io.StringIO(resp.text))
-        rows = list(reader)
+        all_rows = list(reader)
         columns = reader.fieldnames or []
     except Exception as exc:
         return {
@@ -530,14 +578,34 @@ def get_dataset_data(
             "raw_preview": resp.text[:500],
         }
 
-    return {
+    # ── Compact output: strip redundant columns that waste context ──
+    DROP_COLS = {"DATAFLOW", "STRUCTURE", "STRUCTURE_ID", "STRUCTURE_NAME"}
+    keep_cols = [c for c in columns if c not in DROP_COLS]
+
+    # ── Hard row cap: never return more than MAX_ROWS to the LLM ──
+    MAX_ROWS = 25
+    total_rows = len(all_rows)
+    truncated = total_rows > MAX_ROWS
+    rows_out = all_rows[:MAX_ROWS]
+
+    # Strip dropped columns from each row
+    compact_rows = [{k: row[k] for k in keep_cols if k in row} for row in rows_out]
+
+    result: dict = {
         "dataflow_id": dataflow_id,
         "key_filter": key_filter or "(all)",
-        "rows_returned": len(rows),
-        "columns": list(columns),
-        "data": rows,
-        "note": (
-            "endPeriod bug workaround applied automatically. "
-            "Rows capped at last_n_observations (max 20) per series."
-        ),
+        "total_rows": total_rows,
+        "rows_returned": len(compact_rows),
+        "columns": keep_cols,
+        "data": compact_rows,
     }
+
+    if truncated:
+        result["warning"] = (
+            f"Response truncated: {total_rows} rows available but only {MAX_ROWS} returned. "
+            "To get fewer, more relevant rows: pin more dimensions in the key_filter "
+            "instead of using wildcards. Use get_dimension_values to find the 'total' or "
+            "'all ages' code for each dimension you don't need broken down."
+        )
+
+    return result
