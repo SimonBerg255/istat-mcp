@@ -1,14 +1,14 @@
-# ISTAT Open Data MCP Server
+# ISTAT MCP Server
 
-An MCP (Model Context Protocol) server that gives AI assistants live access to Italian national statistics from **ISTAT** (Istituto Nazionale di Statistica) via the public SDMX REST API.
+An [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that gives AI assistants live access to Italian national statistics from **ISTAT** (Istituto Nazionale di Statistica) via the public SDMX REST API.
 
-Italian public sector AI assistants can use this server to query demographic, economic, social, and territorial data across all Italian municipalities, provinces, and regions — with no API key required.
+Connect any MCP-compatible AI assistant to 4,700+ Italian statistical datasets covering demographics, employment, education, health, economy, territory, and more — with no API key required.
 
 ---
 
 ## What is ISTAT?
 
-ISTAT is the Italian National Statistics Institute. It publishes authoritative data on:
+ISTAT is Italy's National Statistics Institute. It publishes authoritative data on:
 
 - Population and demographics (births, deaths, migration, age structure)
 - Employment and labour market
@@ -21,130 +21,131 @@ ISTAT is the Italian National Statistics Institute. It publishes authoritative d
 - Immigration and foreign residents
 - Regional GDP and economic indicators
 
-Official data portal: **https://esploradati.istat.it**
+Data portal: **https://esploradati.istat.it**
 
 ---
 
-## No API Key Needed
+## No API Key Required
 
-The ISTAT SDMX REST API is fully public. No registration, no credentials.
+The ISTAT SDMX REST API is fully public. No registration or credentials needed.
 
 ---
 
-## ⚠️ Rate Limit Warning — Read This
+## ⚠️ Rate Limit — Read This First
 
-**ISTAT enforces a strict limit of 5 requests per minute per IP address.**
+**ISTAT enforces a hard limit of 5 requests per minute per IP address.**
 
-Exceeding this limit triggers an IP block lasting **1–2 days**. The server enforces the rate limit automatically with a sliding-window throttle — you will see log messages like:
+Exceeding this triggers an IP block lasting 1–2 days. The server enforces the rate limit automatically with a sliding-window throttle. You will see log messages like:
 
 ```
 [ISTAT rate limit] Sleeping 12.3s to respect 5 req/min cap
 ```
 
-This is normal. Do not disable or bypass the rate limiter.
+This is expected behaviour. Do not disable the rate limiter.
 
 ---
 
-## How to Run
+## Tools
 
-### Install dependencies
+The server exposes four generic tools that let an AI agent navigate the full ISTAT catalogue:
+
+| Tool | Purpose |
+|------|---------|
+| `search_datasets` | Search ~4,700 datasets by keyword. Returns dataset IDs needed for the other tools. |
+| `get_dataset_structure` | Inspect all dimensions of a dataset (e.g. territory, age, sex, time frequency) and their codelist IDs. Cached after first call. |
+| `get_dimension_values` | Look up valid codes for any dimension — territory names, age groups, sex codes, etc. Pass `search=` to filter. Cached. |
+| `get_dataset_data` | Fetch actual data using a dot-separated key filter built from codes discovered above. |
+
+### Workflow the AI follows automatically
+
+```
+1. search_datasets("unemployment by region")   → get dataset ID
+2. get_dataset_structure("151_914")            → inspect dimensions, find codelist IDs
+3. get_dimension_values("151_914", "REF_AREA", search="Lazio")  → get territory code
+4. get_dataset_data("151_914", key_filter="A.ITE4.......", last_n_observations=5)
+```
+
+Steps 2 and 3 are cached — no extra API calls after first use per dataset.
+
+---
+
+## Resources
+
+| URI | Description |
+|-----|-------------|
+| `resource://istat/catalog` | Curated list of high-value datasets for public sector use |
+| `resource://istat/api_guide` | Rate limit rules, key filter format, known bugs, query patterns |
+
+---
+
+## Running Locally
 
 ```bash
 pip install -r requirements.txt
-```
-
-### Start the server
-
-```bash
 uvicorn server:app --host 0.0.0.0 --port 8000
 ```
 
-The MCP endpoint will be available at:
+MCP endpoint: `http://localhost:8000/mcp`
 
-```
-http://localhost:8000/mcp
-```
+Health check: `http://localhost:8000/health`
+
+---
+
+## Deploy to Railway
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template)
+
+1. Fork this repo
+2. Create a new Railway project from your fork
+3. Railway auto-detects the `Procfile` and deploys with no configuration needed
+4. Copy the Railway URL and add `/mcp` — that's your MCP endpoint
+
+No environment variables required.
 
 ---
 
 ## Connecting to Intric
 
-In the Intric assistant configuration, set the MCP server URL to:
+In your Intric assistant configuration, set the MCP server URL to:
 
 ```
-http://your-server-host:8000/mcp
+https://your-railway-app.railway.app/mcp
 ```
 
-No API key field is needed — leave it blank.
+The server instructions tell the AI to execute tool chains automatically — you do not need to configure tool-call behaviour manually.
 
 ---
 
-## Available Tools
+## Example Questions
 
-| Tool | Description |
-|------|-------------|
-| `search_datasets` | Search ~450 ISTAT datasets by keyword |
-| `get_dataset_structure` | Inspect dimensions and filters for a dataset |
-| `get_dataset_data` | Fetch data with optional time range and dimension filters |
-| `get_population_data` | Convenience wrapper for population data by municipality |
-| `get_employment_data` | Convenience wrapper for employment/unemployment rates by region |
+Once connected, an AI assistant can answer questions like:
 
-## Available Resources
-
-| Resource URI | Description |
-|---|---|
-| `resource://istat/catalog` | Curated list of ~20 high-value datasets for public sector |
-| `resource://istat/api_guide` | Rate limit rules, known bugs, and query patterns |
-| `resource://istat/territory/regions` | All 20 Italian regions with NUTS2 codes |
-| `resource://istat/territory/metro_cities` | 14 metropolitan cities with ISTAT codes |
-| `resource://istat/territory/provinces` | Italian provinces with numeric ISTAT codes |
-
----
-
-## Example Questions an AI Can Now Answer
-
-- *"What is the current population of Milan?"*
-- *"Show me the unemployment rate trend in Calabria over the last 5 years."*
-- *"How many births were registered in Rome in recent years?"*
+- *"What is the population of Milan?"*
+- *"Show me unemployment trends in Calabria over the last 5 years."*
+- *"How many births were registered in Rome recently?"*
 - *"Which Italian regions have the highest employment rates?"*
-- *"Find datasets about school enrollment in Italy."*
-- *"What is the population of Turin municipality?"*
-- *"Show immigration permit data for Lombardia."*
+- *"Find datasets about school enrolment in Italy."*
+- *"Compare immigration permit data across northern regions."*
 
 ---
 
-## Recommended Query Workflow
+## Known API Behaviour
 
-```
-1. search_datasets("population")         → find dataset ID
-2. get_dataset_structure("DCIS_POPORESBIL1")  → understand dimensions
-3. get_dataset_data("DCIS_POPORESBIL1", last_n_observations=5)  → fetch data
-```
+**`endPeriod` returns one extra year** — when `endPeriod=2023` is sent, the API returns data through 2024. This server applies the workaround automatically (subtracts 1 from the requested end year).
 
-For common use cases, skip steps 1–2 and use convenience tools directly:
-
-```
-get_population_data(territory_code="015146", last_n_years=5)   # Milan
-get_employment_data(region_code="ITC4", last_n_years=5)        # Lombardia
-```
+**Occasional API degradation** — ISTAT's infrastructure periodically experiences slowdowns or partial outages, particularly on the `/dataflow/IT1/all` (catalogue) and `/data/...` endpoints. When this happens, `search_datasets` and `get_dataset_data` will time out. Metadata endpoints (`get_dataset_structure`, `get_dimension_values`) typically remain available. Recovery is usually within a few hours to two days.
 
 ---
 
-## Known API Bug: endPeriod Returns One Extra Year
+## Architecture
 
-When `endPeriod=2023` is sent to the ISTAT API, it returns data up to 2024.
-
-**This server applies the workaround automatically.** The `get_dataset_data` tool subtracts 1 from your requested end year before sending the request. You do not need to account for this manually.
-
----
-
-## Architecture Notes
-
-- XML parsing: `xml.etree.ElementTree` (stdlib — no lxml dependency)
-- CSV parsing: `csv.DictReader` (stdlib — no pandas dependency)
-- HTTP client: `httpx` with 120s timeout and `verify=False` for ISTAT SSL cert quirks
-- Dataflow cache: the full list of ~450 datasets is fetched once and cached for 24 hours
-- Rate limiter: thread-safe sliding window, sleeps as needed before each request
+- **Framework**: [FastMCP](https://github.com/jlowin/fastmcp) (Python)
+- **HTTP client**: `httpx` with 120s timeout and `verify=False` (ISTAT SSL quirks)
+- **XML parsing**: `xml.etree.ElementTree` (stdlib — no lxml)
+- **Rate limiter**: thread-safe sliding window, auto-sleeps before each request
+- **Dataflow cache**: full catalogue fetched once, cached 24 hours
+- **Structure cache**: per-dataset DSD cached in memory indefinitely
+- **Codelist cache**: per-codelist values cached in memory indefinitely
 
 ---
 
@@ -152,9 +153,14 @@ When `endPeriod=2023` is sent to the ISTAT API, it returns data up to 2024.
 
 Base URL: `https://esploradati.istat.it/SDMXWS/rest/`
 
-Key endpoints:
-- `GET /dataflow/IT1` — list all datasets
-- `GET /data/{dataflow_id}` — get data (CSV preferred)
-- `GET /datastructure/IT1/{structure_id}` — get schema
+Key endpoints used:
+- `GET /dataflow/IT1/all` — list all datasets
+- `GET /dataflow/IT1/{id}?references=all` — dataset metadata + full structure in one call
+- `GET /codelist/IT1/{codelist_id}` — valid codes for a dimension
+- `GET /data/IT1,{id},1.0/{key_filter}` — time-series data
 
-Official ISTAT open data portal: https://esploradati.istat.it
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
