@@ -91,31 +91,6 @@ Health check: `http://localhost:8000/health`
 
 ---
 
-## Deploy to Railway
-
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template)
-
-1. Fork this repo
-2. Create a new Railway project from your fork
-3. Railway auto-detects the `Procfile` and deploys with no configuration needed
-4. Copy the Railway URL and add `/mcp` — that's your MCP endpoint
-
-No environment variables required.
-
----
-
-## Connecting to Intric
-
-In your Intric assistant configuration, set the MCP server URL to:
-
-```
-https://your-railway-app.railway.app/mcp
-```
-
-The server instructions tell the AI to execute tool chains automatically — you do not need to configure tool-call behaviour manually.
-
----
-
 ## Example Questions
 
 Once connected, an AI assistant can answer questions like:
